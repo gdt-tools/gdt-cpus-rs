@@ -5,9 +5,25 @@
 //! core, affinity masks allow threads to migrate between a specified set of
 //! cores, reducing scheduling latency while still constraining execution.
 
+use std::fmt;
+use std::fmt::Debug;
+use std::num::ParseIntError;
+use std::str::FromStr;
+
 /// Number of `u64` words in the fixed bitset. 16 words = 1024 logical
 /// processors, matching the Linux static `cpu_set_t` (`CPU_SETSIZE`).
 const WORDS: usize = 16;
+
+/// Error type for parsing affinity masks from strings
+#[derive(Debug, thiserror::Error)]
+pub enum AffinityMaskFromStrError {
+    /// Bad string format, it must be a comma-separated list of CPU cores or ranges
+    #[error("Bad string format, it must be a comma-separated list of CPU cores or ranges")]
+    BadFormat,
+    /// Failed to parse integer
+    #[error("Failed to parse integer: {0}")]
+    ParseIntError(#[from] ParseIntError),
+}
 
 /// A cross-platform CPU affinity mask representing a set of logical processors.
 ///
@@ -364,35 +380,66 @@ impl AffinityMask {
     }
 }
 
-impl std::fmt::Debug for AffinityMask {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for AffinityMask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AffinityMask")
-            .field("cores", &Ranges(self))
+            .field("cores", &Ranges::<true>(self))
             .field("count", &self.count())
             .finish()
     }
 }
 
-impl std::fmt::Display for AffinityMask {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Display is the value, not the type: a bare range list (`[0-3, 6-9]`,
-        // `[]`), the way a slice renders. The `AffinityMask { .. }` decoration
-        // is Debug's job.
-        write!(f, "{:?}", Ranges(self))
+impl fmt::Display for AffinityMask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Display is the value, not the type: a bare range list (`0-3, 6-9`, ``)
+        Ranges::<false>(self).fmt(f)
     }
 }
 
-/// Formats the set core ids as a bracketed, comma-separated range list:
-/// `[]`, `[5]`, `[0-3]`, `[0-3, 6-9, 15]`. Relies on [`AffinityMask::iter`]
-/// yielding ids in ascending order, so consecutive runs coalesce into `a-b`.
-struct Ranges<'a>(&'a AffinityMask);
+impl FromStr for AffinityMask {
+    type Err = AffinityMaskFromStrError;
 
-impl std::fmt::Debug for Ranges<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut mask = Self::empty();
+
+        if s.is_empty() {
+            return Ok(mask);
+        }
+
+        for s in s.split(',') {
+            let mut parts = s.trim_ascii().split('-');
+            let range_start = parts
+                .next()
+                .ok_or(AffinityMaskFromStrError::BadFormat)?
+                .parse()?;
+
+            if let Some(range_end) = parts.next() {
+                let range_end = range_end.parse()?;
+
+                mask.extend(range_start..=range_end);
+            } else {
+                mask.add(range_start);
+            }
+        }
+
+        Ok(mask)
+    }
+}
+
+/// Formats the set core ids as a bracketed (if `BRACKETS = true`), comma-separated
+/// range list: `[]`, `[5]`, `[0-3]`, `[0-3, 6-9, 15]`.
+/// Relies on [`AffinityMask::iter`] yielding ids in ascending order, so consecutive
+/// runs coalesce into `a-b`.
+struct Ranges<'a, const BRACKETS: bool>(&'a AffinityMask);
+
+impl<const BRACKETS: bool> fmt::Debug for Ranges<'_, BRACKETS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut iter = self.0.iter().peekable();
         let mut first = true;
 
-        write!(f, "[")?;
+        if BRACKETS {
+            write!(f, "[")?;
+        }
         while let Some(start) = iter.next() {
             let mut end = start;
             while iter.peek() == Some(&(end + 1)) {
@@ -410,7 +457,11 @@ impl std::fmt::Debug for Ranges<'_> {
                 write!(f, "{start}-{end}")?;
             }
         }
-        write!(f, "]")
+        if BRACKETS {
+            write!(f, "]")?;
+        }
+
+        Ok(())
     }
 }
 
@@ -597,9 +648,7 @@ mod tests {
         );
     }
 
-    // Display is the bare value -- the range list with no `AffinityMask(...)`
-    // wrapper (that decoration is Debug's), the way a slice renders: `[0-3]`,
-    // `[]`.
+    // Display is the bare value -- the range list with no decoration: `0-3`, ``.
     #[test]
     fn test_display_format() {
         assert_eq!(
@@ -607,8 +656,18 @@ mod tests {
                 "{}",
                 AffinityMask::from_cores(&[0, 1, 2, 3, 6, 7, 8, 9, 15])
             ),
-            "[0-3, 6-9, 15]"
+            "0-3, 6-9, 15"
         );
-        assert_eq!(format!("{}", AffinityMask::empty()), "[]");
+        assert_eq!(format!("{}", AffinityMask::empty()), "");
+    }
+
+    /// Passing from a string is the reverse of display formatting.
+    #[test]
+    fn test_parse_format() {
+        assert_eq!(
+            AffinityMask::from_str("0-3, 6-9,15").unwrap(),
+            AffinityMask::from_cores(&[0, 1, 2, 3, 6, 7, 8, 9, 15])
+        );
+        assert_eq!(AffinityMask::from_str("").unwrap(), AffinityMask::empty());
     }
 }

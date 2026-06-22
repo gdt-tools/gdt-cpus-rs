@@ -15,6 +15,7 @@ rust-version = "1.96"
 
 [dependencies]
 bitflags = "2.13.0" # Bit flags for CPU features
+thiserror = "2.0.18"
 
 # Platform-specific dependencies (enabled conditionally)
 [target.'cfg(target_arch = "x86_64")'.dependencies]

@@ -74,11 +74,11 @@ impl PriorityCaps {
 /// }
 /// ```
 pub fn priority_capabilities() -> PriorityCaps {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         crate::platform::linux::capabilities::priority_capabilities()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
         PriorityCaps {
             effective_rank: [0, 1, 2, 3, 4, 5, 6],

@@ -282,7 +282,7 @@ pub(crate) fn set_thread_priority(priority: ThreadPriority) -> Result<AppliedPri
             #[cfg_attr(not(feature = "rtkit"), allow(unused_mut))]
             let mut broker_error: Option<BrokerError> = None;
 
-            #[cfg(feature = "rtkit")]
+            #[cfg(all(feature = "rtkit", not(target_os = "android")))]
             {
                 if let Ok(tid) = current_tid() {
                     match crate::platform::linux::rtkit::try_high_priority(tid as u64, value) {

@@ -23,7 +23,7 @@ pub(crate) mod common_x86_64;
 
 // Production consumer is Linux (sysfs range lists); the shared fixture
 // checker uses it in test builds on every platform.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "android", test))]
 pub(crate) mod ranges;
 
 // Shared expected.txt checker for fixture-driven detection tests (Linux sysfs
@@ -31,7 +31,7 @@ pub(crate) mod ranges;
 #[cfg(test)]
 pub(crate) mod fixture_expected;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) mod linux;
 
 // Compiled for tests on EVERY platform: the macOS detection pipeline is pure

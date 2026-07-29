@@ -80,7 +80,7 @@ pub(crate) fn promote(budget: Duration) -> Result<AppliedPriority> {
         Err(e) => return Err(e),
     };
 
-    #[cfg(feature = "rtkit")]
+    #[cfg(all(feature = "rtkit", not(target_os = "android")))]
     {
         use super::rtkit::Broker;
 
@@ -160,7 +160,7 @@ pub(crate) fn promote(budget: Duration) -> Result<AppliedPriority> {
 
 /// The daemon REJECTS requests above its `MaxRealtimePriority` (it does not
 /// clamp), so ask for the lesser of our band position and its ceiling.
-#[cfg(feature = "rtkit")]
+#[cfg(all(feature = "rtkit", not(target_os = "android")))]
 fn request_priority(max_realtime_priority: i64) -> u32 {
     (RT_PRIORITY as i64).min(max_realtime_priority).clamp(1, 99) as u32
 }
@@ -168,7 +168,7 @@ fn request_priority(max_realtime_priority: i64) -> u32 {
 /// The Mozilla ritual: soft = budget (SIGXCPU, catchable warning), hard = the
 /// daemon's ceiling (SIGKILL). Never raises the hard limit (impossible
 /// unprivileged) - only lowers it toward what the grant requires.
-#[cfg(feature = "rtkit")]
+#[cfg(all(feature = "rtkit", not(target_os = "android")))]
 fn set_rttime_rlimit(budget: Duration, rttime_usec_max: i64) -> Result<()> {
     let daemon_max = rttime_usec_max.max(1) as libc::rlim_t;
 
@@ -233,7 +233,7 @@ pub(crate) fn demote() -> Result<()> {
     let res = unsafe {
         libc::sched_setscheduler(
             tid as libc::pid_t,
-            libc::SCHED_OTHER | reset_on_fork,
+            libc::SCHED_NORMAL | reset_on_fork,
             &param,
         )
     };
@@ -241,7 +241,7 @@ pub(crate) fn demote() -> Result<()> {
     if res != 0 {
         let err = std::io::Error::last_os_error();
         return Err(Error::SystemCall(format!(
-            "sched_setscheduler(SCHED_OTHER) failed: {}",
+            "sched_setscheduler(SCHED_NORMAL) failed: {}",
             err
         )));
     }

@@ -15,10 +15,10 @@
 pub(crate) mod affinity;
 pub(crate) mod capabilities;
 pub(crate) mod cpu;
-#[cfg(feature = "rtkit")]
+#[cfg(all(feature = "rtkit", not(target_os = "android")))]
 pub(crate) mod dbus;
 pub(crate) mod realtime;
-#[cfg(feature = "rtkit")]
+#[cfg(all(feature = "rtkit", not(target_os = "android")))]
 pub(crate) mod rtkit;
 pub(crate) mod scheduling_policy;
 pub(crate) mod utils;

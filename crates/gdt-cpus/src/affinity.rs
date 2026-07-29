@@ -43,11 +43,11 @@ pub fn set_thread_affinity(mask: &AffinityMask) -> Result<()> {
     {
         crate::platform::windows::affinity::set_thread_affinity(mask)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         crate::platform::linux::affinity::set_thread_affinity(mask)
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "android")))]
     {
         let _ = mask;
         Err(crate::Error::Unsupported(
@@ -83,11 +83,11 @@ pub fn current_affinity() -> Result<AffinityMask> {
     {
         crate::platform::windows::affinity::current_affinity()
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         crate::platform::linux::affinity::current_affinity()
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "android")))]
     {
         Err(crate::Error::Unsupported(
             "Reading thread affinity is not supported on this platform.".to_string(),
@@ -151,7 +151,7 @@ pub fn set_thread_priority(priority: ThreadPriority) -> Result<AppliedPriority> 
     {
         crate::platform::windows::affinity::set_thread_priority(priority)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         crate::platform::linux::affinity::set_thread_priority(priority)
     }
@@ -159,7 +159,12 @@ pub fn set_thread_priority(priority: ThreadPriority) -> Result<AppliedPriority> 
     {
         crate::platform::macos::affinity::set_thread_priority(priority)
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos"
+    )))]
     {
         let _ = priority;
         Err(crate::Error::Unsupported(

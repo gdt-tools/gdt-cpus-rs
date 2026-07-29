@@ -59,7 +59,7 @@ impl CpuInfo {
     /// and keep the value.
     #[must_use = "detecting topology has a cost; keep and reuse the returned CpuInfo"]
     pub fn detect() -> Result<Self> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             crate::platform::linux::cpu::detect_cpu_info()
         }
@@ -71,7 +71,12 @@ impl CpuInfo {
         {
             crate::platform::windows::cpu::detect_cpu_info()
         }
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos"
+        )))]
         {
             Err(crate::Error::Unsupported(
                 "CPU information detection is not supported on this platform.".to_string(),

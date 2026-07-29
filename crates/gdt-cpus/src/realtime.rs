@@ -49,7 +49,7 @@ use crate::{AppliedPriority, Result};
 /// the hard limit is the recovery path, a library-owned handler would fight
 /// the application's own signal management.
 pub fn promote_thread_to_realtime(budget: Duration) -> Result<AppliedPriority> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         crate::platform::linux::realtime::promote(budget)
     }
@@ -63,7 +63,12 @@ pub fn promote_thread_to_realtime(budget: Duration) -> Result<AppliedPriority> {
         let _ = budget;
         crate::platform::windows::affinity::promote_thread_to_realtime()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "windows"
+    )))]
     {
         let _ = budget;
         Err(crate::Error::Unsupported(
@@ -83,7 +88,7 @@ pub fn promote_thread_to_realtime(budget: Duration) -> Result<AppliedPriority> {
 /// rejoin QoS and lands on the legacy `SCHED_OTHER` band at Normal strength.
 /// On Windows it returns to `THREAD_PRIORITY_NORMAL`.
 pub fn demote_thread_from_realtime() -> Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         crate::platform::linux::realtime::demote()
     }
@@ -97,7 +102,12 @@ pub fn demote_thread_from_realtime() -> Result<()> {
         crate::platform::windows::affinity::set_thread_priority(crate::ThreadPriority::Normal)
             .map(|_| ())
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "windows"
+    )))]
     {
         Err(crate::Error::Unsupported(
             "Real-time promotion is not supported on this platform.".to_string(),

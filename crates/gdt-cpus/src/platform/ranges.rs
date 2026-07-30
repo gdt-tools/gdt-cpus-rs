@@ -1,8 +1,10 @@
 //! Kernel range-list parsing ("0-3,7,10-11" -> CPU IDs).
 //!
-//! Platform-neutral on purpose: Linux production code parses `cpu/online`,
-//! `cache/index*/shared_cpu_list` and `node*/cpulist` with it, and the
-//! cross-platform fixture checker uses it for `expected.txt` LP lists.
+//! `AffinityMask::from_str` parses this grammar on every platform, so the
+//! module is ungated. The sysfs-facing entry points (Linux `cpu/online`,
+//! `cache/index*/shared_cpu_list`, `node*/cpulist`, and the fixture checker's
+//! `expected.txt` lists) are gated to the Linux family (linux, android) and
+//! test builds.
 
 use crate::{Error, Result};
 
@@ -15,7 +17,40 @@ use crate::{Error, Result};
 /// # Errors
 ///
 /// Returns `Error::Detection` on malformed ranges or non-numeric IDs.
-pub(crate) fn parse_range_list_with<F: FnMut(usize)>(range_str: &str, mut sink: F) -> Result<()> {
+#[cfg(any(target_os = "linux", target_os = "android", test))]
+pub(crate) fn parse_range_list_with<F: FnMut(usize)>(range_str: &str, sink: F) -> Result<()> {
+    parse_range_list_inner(range_str, None, sink)
+}
+
+/// Like [`parse_range_list_with`], but rejects an id at or above
+/// `max_exclusive` *before* expanding the range that names it: `"0-4000000000"`
+/// takes minutes to expand, so a bound checked in the sink is too late.
+///
+/// Detection stays unbounded, so a machine wider than the caller's bitset
+/// degrades instead of failing to enumerate.
+///
+/// # Errors
+///
+/// Returns `Error::InvalidCoreId` for an id at or above `max_exclusive`, plus
+/// everything [`parse_range_list_with`] returns.
+pub(crate) fn parse_range_list_bounded<F: FnMut(usize)>(
+    range_str: &str,
+    max_exclusive: usize,
+    sink: F,
+) -> Result<()> {
+    parse_range_list_inner(range_str, Some(max_exclusive), sink)
+}
+
+fn parse_range_list_inner<F: FnMut(usize)>(
+    range_str: &str,
+    max_exclusive: Option<usize>,
+    mut sink: F,
+) -> Result<()> {
+    let in_bounds = |id: usize| match max_exclusive {
+        Some(max) if id >= max => Err(Error::InvalidCoreId(id)),
+        _ => Ok(id),
+    };
+
     for part in range_str.trim().split(',') {
         let part = part.trim();
 
@@ -47,6 +82,11 @@ pub(crate) fn parse_range_list_with<F: FnMut(usize)>(range_str: &str, mut sink: 
                 )));
             }
 
+            // Both ends before the loop: bounding only `start` would still walk
+            // a 4-billion-wide range to reject it.
+            in_bounds(start)?;
+            in_bounds(end)?;
+
             for id in start..=end {
                 sink(id);
             }
@@ -55,7 +95,7 @@ pub(crate) fn parse_range_list_with<F: FnMut(usize)>(range_str: &str, mut sink: 
                 .parse::<usize>()
                 .map_err(|_| Error::Detection(format!("Invalid CPU ID in range list: {}", part)))?;
 
-            sink(cpu_id);
+            sink(in_bounds(cpu_id)?);
         }
     }
 
@@ -70,6 +110,7 @@ pub(crate) fn parse_range_list_with<F: FnMut(usize)>(range_str: &str, mut sink: 
 /// # Errors
 ///
 /// Returns `Error::Detection` on malformed ranges or non-numeric IDs.
+#[cfg(any(target_os = "linux", target_os = "android", test))]
 pub(crate) fn parse_range_list_str(range_str: &str) -> Result<Vec<usize>> {
     let mut cpus = Vec::new();
 

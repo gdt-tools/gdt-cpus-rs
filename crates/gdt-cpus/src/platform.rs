@@ -21,9 +21,8 @@
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod common_x86_64;
 
-// Production consumer is Linux (sysfs range lists); the shared fixture
-// checker uses it in test builds on every platform.
-#[cfg(any(target_os = "linux", target_os = "android", test))]
+// Ungated: `AffinityMask::from_str` parses this grammar on every platform.
+// The sysfs-facing entry points inside carry their own Linux-family/test gates.
 pub(crate) mod ranges;
 
 // Shared expected.txt checker for fixture-driven detection tests (Linux sysfs

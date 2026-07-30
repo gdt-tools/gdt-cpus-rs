@@ -6,24 +6,14 @@
 //! cores, reducing scheduling latency while still constraining execution.
 
 use std::fmt;
-use std::fmt::Debug;
-use std::num::ParseIntError;
 use std::str::FromStr;
+
+use crate::platform::ranges::parse_range_list_bounded;
+use crate::{Error, Result};
 
 /// Number of `u64` words in the fixed bitset. 16 words = 1024 logical
 /// processors, matching the Linux static `cpu_set_t` (`CPU_SETSIZE`).
 const WORDS: usize = 16;
-
-/// Error type for parsing affinity masks from strings
-#[derive(Debug, thiserror::Error)]
-pub enum AffinityMaskFromStrError {
-    /// Bad string format, it must be a comma-separated list of CPU cores or ranges
-    #[error("Bad string format, it must be a comma-separated list of CPU cores or ranges")]
-    BadFormat,
-    /// Failed to parse integer
-    #[error("Failed to parse integer: {0}")]
-    ParseIntError(#[from] ParseIntError),
-}
 
 /// A cross-platform CPU affinity mask representing a set of logical processors.
 ///
@@ -383,61 +373,80 @@ impl AffinityMask {
 impl fmt::Debug for AffinityMask {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AffinityMask")
-            .field("cores", &Ranges::<true>(self))
+            .field("cores", &Ranges(self))
             .field("count", &self.count())
             .finish()
     }
 }
 
 impl fmt::Display for AffinityMask {
+    /// Renders the value, not the type: `{}` gives a bracketed range list
+    /// (`[0-3, 6-9]`, `[]`) the way a slice does, and `{:#}` drops the brackets
+    /// (`0-3, 6-9`, empty) for a foreign consumer such as `taskset -c` or a
+    /// config file another tool reads.
+    ///
+    /// Both spellings parse back through [`FromStr`]. The `AffinityMask { .. }`
+    /// decoration is [`Debug`](fmt::Debug)'s job.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Display is the value, not the type: a bare range list (`0-3, 6-9`, ``)
-        Ranges::<false>(self).fmt(f)
+        Ranges(self).write(f, !f.alternate())
     }
 }
 
 impl FromStr for AffinityMask {
-    type Err = AffinityMaskFromStrError;
+    type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    /// Parses a core list: comma-separated ids and `a-b` ranges, with or without
+    /// brackets, so both [`Display`](fmt::Display) spellings (`{}` and `{:#}`)
+    /// round-trip. `"[0-3, 6-9, 15]"`, `"0-3,6-9,15"`, `"5"`, `"[]"` and `""`
+    /// all parse. The grammar is the kernel range-list format, so a value read
+    /// out of `/sys/devices/system/cpu/online` parses unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`] for unbalanced brackets, a range with
+    /// more than one `-`, a descending range, or a non-numeric id, and
+    /// [`Error::InvalidCoreId`] for an id at or above
+    /// [`MAX_LP_COUNT`](Self::MAX_LP_COUNT) - unlike [`Extend`], which drops
+    /// out-of-range ids silently.
+    fn from_str(s: &str) -> Result<Self> {
+        let trimmed = s.trim();
+        let body = match (trimmed.starts_with('['), trimmed.ends_with(']')) {
+            (true, true) => &trimmed[1..trimmed.len() - 1],
+            (false, false) => trimmed,
+            _ => {
+                return Err(Error::InvalidParameter(format!(
+                    "Unbalanced brackets in affinity mask: {s:?}"
+                )));
+            }
+        };
+
         let mut mask = Self::empty();
 
-        if s.is_empty() {
-            return Ok(mask);
-        }
-
-        for s in s.split(',') {
-            let mut parts = s.trim_ascii().split('-');
-            let range_start = parts
-                .next()
-                .ok_or(AffinityMaskFromStrError::BadFormat)?
-                .parse()?;
-
-            if let Some(range_end) = parts.next() {
-                let range_end = range_end.parse()?;
-
-                mask.extend(range_start..=range_end);
-            } else {
-                mask.add(range_start);
+        parse_range_list_bounded(body, Self::MAX_LP_COUNT, |id| mask.add(id)).map_err(|e| {
+            match e {
+                // The shared parser calls a grammar fault a detection failure;
+                // through `FromStr` the same text is a bad parameter.
+                Error::Detection(msg) => Error::InvalidParameter(msg),
+                other => other,
             }
-        }
+        })?;
 
         Ok(mask)
     }
 }
 
-/// Formats the set core ids as a bracketed (if `BRACKETS = true`), comma-separated
-/// range list: `[]`, `[5]`, `[0-3]`, `[0-3, 6-9, 15]`.
-/// Relies on [`AffinityMask::iter`] yielding ids in ascending order, so consecutive
-/// runs coalesce into `a-b`.
-struct Ranges<'a, const BRACKETS: bool>(&'a AffinityMask);
+/// Formats the set core ids as a comma-separated range list, bracketed or bare:
+/// `[]`, `[5]`, `[0-3, 6-9, 15]`, `0-3, 6-9, 15`. Relies on
+/// [`AffinityMask::iter`] yielding ids in ascending order, so consecutive runs
+/// coalesce into `a-b`.
+struct Ranges<'a>(&'a AffinityMask);
 
-impl<const BRACKETS: bool> fmt::Debug for Ranges<'_, BRACKETS> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Ranges<'_> {
+    fn write(&self, f: &mut fmt::Formatter<'_>, brackets: bool) -> fmt::Result {
         let mut iter = self.0.iter().peekable();
         let mut first = true;
 
-        if BRACKETS {
+        if brackets {
             write!(f, "[")?;
         }
         while let Some(start) = iter.next() {
@@ -457,11 +466,19 @@ impl<const BRACKETS: bool> fmt::Debug for Ranges<'_, BRACKETS> {
                 write!(f, "{start}-{end}")?;
             }
         }
-        if BRACKETS {
+        if brackets {
             write!(f, "]")?;
         }
 
         Ok(())
+    }
+}
+
+impl fmt::Debug for Ranges<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `AffinityMask`'s `debug_struct` renders this as a field value, so it
+        // always brackets: the field is a set, not a scalar.
+        self.write(f, true)
     }
 }
 
@@ -648,7 +665,9 @@ mod tests {
         );
     }
 
-    // Display is the bare value -- the range list with no decoration: `0-3`, ``.
+    // Display is the bare value -- the range list with no `AffinityMask(...)`
+    // wrapper (that decoration is Debug's), the way a slice renders: `[0-3]`,
+    // `[]`.
     #[test]
     fn test_display_format() {
         assert_eq!(
@@ -656,18 +675,110 @@ mod tests {
                 "{}",
                 AffinityMask::from_cores(&[0, 1, 2, 3, 6, 7, 8, 9, 15])
             ),
-            "0-3, 6-9, 15"
+            "[0-3, 6-9, 15]"
         );
-        assert_eq!(format!("{}", AffinityMask::empty()), "");
+        assert_eq!(format!("{}", AffinityMask::empty()), "[]");
     }
 
-    /// Passing from a string is the reverse of display formatting.
+    // `{:#}` is the bare form, for handing a list to a foreign consumer that
+    // does not want the brackets (`taskset -c`, a config another tool reads).
     #[test]
-    fn test_parse_format() {
+    fn test_display_alternate_drops_brackets() {
         assert_eq!(
-            AffinityMask::from_str("0-3, 6-9,15").unwrap(),
-            AffinityMask::from_cores(&[0, 1, 2, 3, 6, 7, 8, 9, 15])
+            format!(
+                "{:#}",
+                AffinityMask::from_cores(&[0, 1, 2, 3, 6, 7, 8, 9, 15])
+            ),
+            "0-3, 6-9, 15"
         );
-        assert_eq!(AffinityMask::from_str("").unwrap(), AffinityMask::empty());
+        assert_eq!(format!("{:#}", AffinityMask::empty()), "");
+
+        // Debug keeps the brackets whichever way Display was asked to render.
+        assert_eq!(
+            format!("{:?}", AffinityMask::from_cores(&[0, 1, 2, 3])),
+            "AffinityMask { cores: [0-3], count: 4 }"
+        );
+    }
+
+    // Both spellings parse: what Display emits, and the bare kernel range list
+    // a user types on a command line or copies out of sysfs.
+    #[test]
+    fn test_parse_accepts_bracketed_and_bare() {
+        let expected = AffinityMask::from_cores(&[0, 1, 2, 3, 6, 7, 8, 9, 15]);
+
+        for input in [
+            "[0-3, 6-9, 15]",
+            "0-3, 6-9,15",
+            "0,1,2,3,6-9,15",
+            " [ 0-3 , 6-9 , 15 ] ",
+        ] {
+            assert_eq!(
+                AffinityMask::from_str(input).unwrap(),
+                expected,
+                "input {input:?}"
+            );
+        }
+
+        for empty in ["", "[]", "   ", "[ ]"] {
+            assert_eq!(
+                AffinityMask::from_str(empty).unwrap(),
+                AffinityMask::empty(),
+                "input {empty:?}"
+            );
+        }
+    }
+
+    // The property the pair is supposed to have: Display and FromStr invert.
+    #[test]
+    fn test_parse_round_trips_display() {
+        for cores in [
+            vec![],
+            vec![5],
+            vec![0, 1, 2, 3],
+            vec![0, 1, 2, 3, 6, 7, 8, 9, 15],
+            vec![0, AffinityMask::MAX_LP_COUNT - 1],
+        ] {
+            let mask = AffinityMask::from_cores(&cores);
+
+            // Both spellings, since either can end up in a file or a flag.
+            for rendered in [format!("{mask}"), format!("{mask:#}")] {
+                assert_eq!(
+                    AffinityMask::from_str(&rendered).unwrap(),
+                    mask,
+                    "round trip of {rendered:?}"
+                );
+            }
+        }
+    }
+
+    // Malformed text is rejected, never silently reinterpreted as a subset.
+    #[test]
+    fn test_parse_rejects_malformed() {
+        for bad in [
+            "0-3-5", // more than one '-': the tail must not be dropped
+            "3-0",   // descending range: not an empty mask
+            "abc",   // not a number
+            "0 3",   // missing separator
+            "[0-3",  // unbalanced brackets
+            "0-3]",
+        ] {
+            assert!(
+                AffinityMask::from_str(bad).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    // Out-of-range ids are an error here, unlike the silent drop `Extend`
+    // performs: a typo must not quietly shrink the mask.
+    #[test]
+    fn test_parse_rejects_out_of_range() {
+        for bad in ["1024", "5000", "0-5000"] {
+            assert!(
+                matches!(AffinityMask::from_str(bad), Err(Error::InvalidCoreId(_))),
+                "expected {bad:?} to report InvalidCoreId, got {:?}",
+                AffinityMask::from_str(bad)
+            );
+        }
     }
 }

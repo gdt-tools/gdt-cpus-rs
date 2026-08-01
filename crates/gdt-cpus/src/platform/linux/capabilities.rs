@@ -20,7 +20,7 @@ pub(crate) fn priority_capabilities() -> PriorityCaps {
     let rtkit_min_nice = crate::platform::linux::rtkit::Broker::rtkit()
         .ok()
         .map(|mut broker| broker.min_nice_level().clamp(-20, 0) as i32);
-    #[cfg(not(feature = "rtkit"))]
+    #[cfg(not(all(feature = "rtkit", target_os = "linux")))]
     let rtkit_min_nice: Option<i32> = None;
 
     PriorityCaps {

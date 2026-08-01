@@ -151,7 +151,7 @@ pub(crate) fn promote(budget: Duration) -> Result<AppliedPriority> {
 
         Ok(kept_timeshare(reason, broker_error))
     }
-    #[cfg(not(feature = "rtkit"))]
+    #[cfg(not(all(feature = "rtkit", target_os = "linux")))]
     {
         let _ = budget;
         Ok(kept_timeshare(FallbackReason::NoBroker, None))

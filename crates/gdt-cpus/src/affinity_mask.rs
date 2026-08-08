@@ -381,9 +381,10 @@ impl fmt::Debug for AffinityMask {
 
 impl fmt::Display for AffinityMask {
     /// Renders the value, not the type: `{}` gives a bracketed range list
-    /// (`[0-3, 6-9]`, `[]`) the way a slice does, and `{:#}` drops the brackets
-    /// (`0-3, 6-9`, empty) for a foreign consumer such as `taskset -c` or a
-    /// config file another tool reads.
+    /// (`[0-3, 6-9]`, `[]`) the way a slice does, and `{:#}` renders the exact
+    /// kernel spelling (`0-3,6-9`, empty) for a foreign consumer such as
+    /// `taskset -c`, a config file another tool reads, or a field in a
+    /// whitespace-separated list.
     ///
     /// Both spellings parse back through [`FromStr`]. The `AffinityMask { .. }`
     /// decoration is [`Debug`](fmt::Debug)'s job.
@@ -436,7 +437,7 @@ impl FromStr for AffinityMask {
 }
 
 /// Formats the set core ids as a comma-separated range list, bracketed or bare:
-/// `[]`, `[5]`, `[0-3, 6-9, 15]`, `0-3, 6-9, 15`. Relies on
+/// `[]`, `[5]`, `[0-3, 6-9, 15]`, `0-3,6-9,15`. Relies on
 /// [`AffinityMask::iter`] yielding ids in ascending order, so consecutive runs
 /// coalesce into `a-b`.
 struct Ranges<'a>(&'a AffinityMask);
@@ -456,7 +457,9 @@ impl Ranges<'_> {
             }
 
             if !first {
-                write!(f, ", ")?;
+                // Bracketed reads like a slice; bare is the exact kernel
+                // spelling, safe to embed where whitespace separates fields.
+                f.write_str(if brackets { ", " } else { "," })?;
             }
             first = false;
 
@@ -689,7 +692,7 @@ mod tests {
                 "{:#}",
                 AffinityMask::from_cores(&[0, 1, 2, 3, 6, 7, 8, 9, 15])
             ),
-            "0-3, 6-9, 15"
+            "0-3,6-9,15"
         );
         assert_eq!(format!("{:#}", AffinityMask::empty()), "");
 
@@ -698,6 +701,34 @@ mod tests {
             format!("{:?}", AffinityMask::from_cores(&[0, 1, 2, 3])),
             "AffinityMask { cores: [0-3], count: 4 }"
         );
+    }
+
+    // The bare form must stay whitespace-free, so a caller can join masks with
+    // spaces ("0-7,16-23 8-15,24-31") and split them back.
+    #[test]
+    fn test_bare_form_embeds_in_whitespace_separated_groups() {
+        let groups = [
+            AffinityMask::from_cores(&[0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]),
+            AffinityMask::from_cores(&[
+                8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31,
+            ]),
+        ];
+
+        let joined = groups
+            .iter()
+            .map(|g| format!("{g:#}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(joined, "0-7,16-23 8-15,24-31");
+
+        let parsed: Vec<AffinityMask> = joined
+            .split_whitespace()
+            .map(|g| g.parse().unwrap())
+            .collect();
+        assert_eq!(parsed, groups);
+
+        // A grouped string fed whole must error, never merge into one mask.
+        assert!(joined.parse::<AffinityMask>().is_err());
     }
 
     // Both spellings parse: what Display emits, and the bare kernel range list

@@ -14,7 +14,7 @@ categories = ["game-engines", "concurrency", "hardware-support"]
 rust-version = "1.96"
 
 [dependencies]
-bitflags = "2.13.0" # Bit flags for CPU features
+bitflags = "2.13.1" # Bit flags for CPU features
 
 # Platform-specific dependencies (enabled conditionally)
 [target.'cfg(target_arch = "x86_64")'.dependencies]
@@ -30,10 +30,10 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
-libc = "0.2.186"
+libc = "0.2.189"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2.186"
+libc = "0.2.189"
 
 [features]
 default = ["rtkit"]
@@ -45,7 +45,7 @@ serde = ["dep:serde", "bitflags/serde"] # Serialization support
 rtkit = []
 
 [dependencies.serde]
-version = "1.0.228"
+version = "1.0.229"
 features = ["derive"]
 optional = true
 

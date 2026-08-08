@@ -16,7 +16,7 @@ rust-version = "1.96"
 
 [dependencies]
 gdt-cpus = { version = "0.2606.1", path = "../gdt-cpus", default-features = false }
-libc = "0.2.186"
+libc = "0.2.189"
 
 [features]
 default = ["rtkit"]

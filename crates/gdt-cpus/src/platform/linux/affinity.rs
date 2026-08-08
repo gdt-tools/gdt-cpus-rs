@@ -20,8 +20,8 @@
 use libc::{SYS_gettid, c_int, syscall};
 
 use crate::{
-    AffinityMask, AppliedPriority, BrokerError, Error, FallbackReason, Grant, Mechanism,
-    MechanismPolicy, Result, ThreadPriority,
+    AffinityMask, AppliedPriority, Error, FallbackReason, Grant, Mechanism, MechanismPolicy,
+    Result, ThreadPriority,
     platform::linux::scheduling_policy::{level_for_nice, nice_for},
 };
 
@@ -60,6 +60,10 @@ pub(crate) fn set_thread_affinity(mask: &AffinityMask) -> Result<()> {
     // full (cached) detection inside an affinity call. The kernel validates
     // membership itself and returns EINVAL for CPUs outside the allowed set;
     // we only bound-check against cpu_set_t's capacity.
+    // NOTE(upstream): libc types CPU_SETSIZE as c_int against glibc and as
+    // usize against bionic, so the cast is a required conversion on one target
+    // and a no-op clippy rejects on the other.
+    #[allow(clippy::unnecessary_cast)]
     let max_cpus = libc::CPU_SETSIZE as usize;
 
     // SAFETY: Zero-initializes the cpu_set_t structure.
@@ -128,6 +132,9 @@ pub(crate) fn current_affinity() -> Result<AffinityMask> {
     }
 
     let mut mask = AffinityMask::empty();
+    // NOTE(upstream): see the CPU_SETSIZE cast above - c_int on glibc, usize
+    // on bionic.
+    #[allow(clippy::unnecessary_cast)]
     for cpu in 0..(libc::CPU_SETSIZE as usize) {
         // SAFETY: CPU_ISSET is safe with a valid cpu_set_t pointer and an index
         // below CPU_SETSIZE.
@@ -272,19 +279,15 @@ pub(crate) fn set_thread_priority(priority: ThreadPriority) -> Result<AppliedPri
             },
         )),
         Err(Error::PermissionDenied(_)) => {
-            // Why the stronger request failed - refined by the rtkit attempt.
-            // Defaults to NoBroker for the feature-off / no-tid paths.
-            #[cfg_attr(not(feature = "rtkit"), allow(unused_mut))]
-            let mut reason = FallbackReason::NoBroker;
+            // Why the stronger request failed. NoBroker is the answer wherever
+            // no broker exists to appeal to - the rtkit feature off, Android,
+            // or a broker probe that never produced anything better. The rtkit
+            // cascade below rebinds it with what the broker actually said.
+            let reason = FallbackReason::NoBroker;
 
-            // The typed reason the broker REFUSED, when it answered with a D-Bus
-            // ERROR - carried as data (NOT free text) so a caller can branch on it.
-            #[cfg_attr(not(feature = "rtkit"), allow(unused_mut))]
-            let mut broker_error: Option<BrokerError> = None;
-
-            #[cfg(all(feature = "rtkit", not(target_os = "android")))]
-            {
-                if let Ok(tid) = current_tid() {
+            #[cfg(all(feature = "rtkit", target_os = "linux"))]
+            let reason = match current_tid() {
+                Ok(tid) => {
                     match crate::platform::linux::rtkit::try_high_priority(tid as u64, value) {
                         Ok(granted) if granted == value => {
                             return Ok(AppliedPriority::new(
@@ -311,13 +314,11 @@ pub(crate) fn set_thread_priority(priority: ThreadPriority) -> Result<AppliedPri
                             )
                             .with_reason(FallbackReason::Clamped));
                         }
-                        Err((r, be)) => {
-                            reason = r;
-                            broker_error = be;
-                        }
+                        Err(r) => r,
                     }
                 }
-            }
+                Err(_) => reason,
+            };
 
             // No broker delivered it. Best-effort: a denied setpriority left the
             // thread's nice untouched, so report the level it ACTUALLY sits at
@@ -325,9 +326,10 @@ pub(crate) fn set_thread_priority(priority: ThreadPriority) -> Result<AppliedPri
             // above normal) with WHY, as data. Never an error on a mere denial.
             let current = current_nice().unwrap_or(nice_for(ThreadPriority::Normal));
 
-            // The mechanism is the nice the thread actually KEEPS; the structured
-            // `reason` + `broker_error` carry the classification.
-            let mut applied = AppliedPriority::new(
+            // The mechanism is the nice the thread actually KEEPS; the
+            // structured `reason` carries the classification, refusal detail
+            // included.
+            Ok(AppliedPriority::new(
                 priority,
                 level_for_nice(current),
                 Grant::Direct,
@@ -336,13 +338,7 @@ pub(crate) fn set_thread_priority(priority: ThreadPriority) -> Result<AppliedPri
                     value: current as i8,
                 },
             )
-            .with_reason(reason);
-
-            if let Some(be) = broker_error {
-                applied = applied.with_broker_error(be);
-            }
-
-            Ok(applied)
+            .with_reason(reason))
         }
 
         Err(other) => Err(other),

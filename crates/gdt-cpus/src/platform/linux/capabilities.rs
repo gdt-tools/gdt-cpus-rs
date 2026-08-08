@@ -16,7 +16,7 @@ const NICE_LADDER: [i32; 7] = [19, 10, 5, 0, -5, -10, -20];
 pub(crate) fn priority_capabilities() -> PriorityCaps {
     let nice_floor = nice_floor_from_rlimit();
 
-    #[cfg(all(feature = "rtkit", not(target_os = "android")))]
+    #[cfg(all(feature = "rtkit", target_os = "linux"))]
     let rtkit_min_nice = crate::platform::linux::rtkit::Broker::rtkit()
         .ok()
         .map(|mut broker| broker.min_nice_level().clamp(-20, 0) as i32);

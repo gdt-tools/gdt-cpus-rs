@@ -247,8 +247,10 @@ pub enum FallbackReason {
     /// the thread kept.
     BrokerTimedOut,
     /// Broker reached and it explicitly refused (policy / rate limit). The
-    /// effective level reports what the thread kept.
-    BrokerRefused,
+    /// payload is the typed refusal - branch on it (`AccessDenied` vs
+    /// `LimitsExceeded`) to decide retry vs give-up. The effective level
+    /// reports what the thread kept.
+    BrokerRefused(BrokerError),
     /// Broker granted, but weaker than asked - it hit its ceiling (rtkit caps
     /// negative nice at `MinNiceLevel`, default -15). You kept the *level* but
     /// lost strength; reach for [`crate::promote_thread_to_realtime`] if you
@@ -261,21 +263,23 @@ impl std::fmt::Display for FallbackReason {
         match self {
             FallbackReason::NoBroker => write!(f, "NoBroker"),
             FallbackReason::BrokerTimedOut => write!(f, "BrokerTimedOut"),
-            FallbackReason::BrokerRefused => write!(f, "BrokerRefused"),
+            FallbackReason::BrokerRefused(_) => write!(f, "BrokerRefused"),
             FallbackReason::Clamped => write!(f, "Clamped"),
         }
     }
 }
 
-/// The specific reason a privilege broker REFUSED a grant - the typed form of
-/// the D-Bus error name it answered with, carried by [`AppliedPriority::broker_error`]
-/// when [`reason`](AppliedPriority::reason) is [`FallbackReason::BrokerRefused`].
+/// The specific reason a privilege broker REFUSED a grant - the payload of
+/// [`FallbackReason::BrokerRefused`], also reachable through the
+/// [`AppliedPriority::broker_error`] convenience accessor.
 ///
 /// This is the *actionable* classification behind a refusal: branch on it to
-/// decide whether to retry. We deliberately keep only the well-known names as
-/// variants and collapse everything else to [`Other`](BrokerError::Other) - the
-/// name is the signal, the daemon's free-text message is not worth a heap
-/// allocation for the rare unmapped case (read the rtkit journal for that).
+/// decide whether to retry. The variants are platform-neutral; on Linux they
+/// are produced by mapping the broker's D-Bus error name, and we deliberately
+/// keep only the well-known names as variants and collapse everything else to
+/// [`Other`](BrokerError::Other) - the name is the signal, the daemon's
+/// free-text message is not worth a heap allocation for the rare unmapped case
+/// (read the rtkit journal for that).
 ///
 /// `#[non_exhaustive]`: brokers can grow error names; matching must carry a `_`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,11 +304,13 @@ pub enum BrokerError {
     Other,
 }
 
+// Compiled exactly where the rtkit broker is - the only producer of D-Bus
+// error names.
+#[cfg(all(feature = "rtkit", target_os = "linux"))]
 impl BrokerError {
     /// Maps a D-Bus error name to its [`BrokerError`]. Unmapped names (including
     /// rtkit-private `org.freedesktop.RealtimeKit1.Error.*` ones) become
     /// [`Other`](BrokerError::Other).
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn from_dbus_name(name: &str) -> BrokerError {
         match name {
             "org.freedesktop.DBus.Error.AccessDenied" => BrokerError::AccessDenied,
@@ -459,44 +465,32 @@ pub struct AppliedPriority {
     /// How the request was satisfied.
     grant: Grant,
     /// Why the request fell short, if it did - see [`FallbackReason`]. `None`
-    /// means you got exactly what you asked for.
+    /// means you got exactly what you asked for. A broker refusal carries its
+    /// typed detail inside [`FallbackReason::BrokerRefused`].
     reason: Option<FallbackReason>,
     /// The concrete OS scheduling mechanism the request landed on, as typed data
     /// (the former human `detail` string). `value` is interpreted per `policy`.
     mechanism: Mechanism,
-    /// The typed reason a broker REFUSED the grant - `Some` only when
-    /// [`reason`](Self::reason) is [`FallbackReason::BrokerRefused`], `None`
-    /// otherwise. Branch on it (`AccessDenied` vs `LimitsExceeded`) to decide
-    /// retry vs give-up.
-    broker_error: Option<BrokerError>,
 }
 
 impl AppliedPriority {
     /// Rebuilds an outcome from structured data.
     ///
-    /// Returns `None` when the parts contradict each other, such as a broker
-    /// error without a broker-refused reason.
-    #[must_use]
+    /// Every combination of parts is a valid outcome.
     pub fn from_parts(
         requested: ThreadPriority,
         effective: ThreadPriority,
         grant: Grant,
         reason: Option<FallbackReason>,
         mechanism: Mechanism,
-        broker_error: Option<BrokerError>,
-    ) -> Option<Self> {
-        if broker_error.is_some() && reason != Some(FallbackReason::BrokerRefused) {
-            return None;
-        }
-
-        Some(Self {
+    ) -> Self {
+        Self {
             requested,
             effective,
             grant,
             reason,
             mechanism,
-            broker_error,
-        })
+        }
     }
 
     pub(crate) fn new(
@@ -505,8 +499,7 @@ impl AppliedPriority {
         grant: Grant,
         mechanism: Mechanism,
     ) -> Self {
-        Self::from_parts(requested, effective, grant, None, mechanism, None)
-            .expect("clean priority outcome is valid")
+        Self::from_parts(requested, effective, grant, None, mechanism)
     }
 
     /// The level the caller requested.
@@ -539,27 +532,24 @@ impl AppliedPriority {
         self.mechanism
     }
 
-    /// The typed reason a broker refused the grant.
+    /// The typed reason a broker refused the grant - the payload of
+    /// [`FallbackReason::BrokerRefused`], surfaced as a convenience so callers
+    /// can branch without a nested match.
     #[must_use]
     pub fn broker_error(&self) -> Option<BrokerError> {
-        self.broker_error
+        match self.reason {
+            Some(FallbackReason::BrokerRefused(e)) => Some(e),
+            _ => None,
+        }
     }
 
     /// Records why the request fell short. Builder-style so the clean-grant
     /// call sites (the overwhelming majority) don't mention it at all. Only the
-    /// Linux cascade clamps or falls back; Windows/macOS never call it.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Linux-family cascade clamps or falls back; Windows/macOS produce clean
+    /// grants or hard errors, so this is compiled only where a producer exists.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) fn with_reason(mut self, reason: FallbackReason) -> Self {
         self.reason = Some(reason);
-
-        self
-    }
-
-    /// Records the typed broker-refusal reason. Builder-style; only the Linux
-    /// cascade's broker-refused path calls it.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub(crate) fn with_broker_error(mut self, broker_error: BrokerError) -> Self {
-        self.broker_error = Some(broker_error);
 
         self
     }
@@ -587,20 +577,17 @@ impl<'de> serde::Deserialize<'de> for AppliedPriority {
             grant: Grant,
             reason: Option<FallbackReason>,
             mechanism: Mechanism,
-            broker_error: Option<BrokerError>,
         }
 
         let parts = Parts::deserialize(deserializer)?;
 
-        AppliedPriority::from_parts(
+        Ok(AppliedPriority::from_parts(
             parts.requested,
             parts.effective,
             parts.grant,
             parts.reason,
             parts.mechanism,
-            parts.broker_error,
-        )
-        .ok_or_else(|| serde::de::Error::custom("broker_error requires reason BrokerRefused"))
+        ))
     }
 }
 
@@ -620,7 +607,7 @@ impl std::fmt::Display for AppliedPriority {
                 }
 
                 if let Some(reason) = self.reason {
-                    write!(f, "{sep}{reason:?}")?;
+                    write!(f, "{sep}{reason}")?;
                 }
 
                 write!(f, "]")?;
@@ -639,14 +626,14 @@ impl std::fmt::Display for AppliedPriority {
                 }
 
                 if let Some(reason) = self.reason {
-                    write!(f, "{sep}{reason:?}")?;
+                    write!(f, "{sep}{reason}")?;
                 }
 
                 write!(f, "]")?;
             }
         }
 
-        if let Some(broker_error) = self.broker_error {
+        if let Some(broker_error) = self.broker_error() {
             write!(f, " ({broker_error})")?;
         }
 
@@ -670,6 +657,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "rtkit", target_os = "linux"))]
     fn broker_error_maps_known_dbus_names() {
         assert_eq!(
             BrokerError::from_dbus_name("org.freedesktop.DBus.Error.AccessDenied"),
@@ -690,6 +678,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "rtkit", target_os = "linux"))]
     fn broker_error_unmapped_name_is_other() {
         assert_eq!(
             BrokerError::from_dbus_name("org.freedesktop.RealtimeKit1.Error.Whatever"),
@@ -760,19 +749,38 @@ mod tests {
         assert_eq!(brokered.to_string(), "Highest [Brokered] nice -10");
 
         // A clamp keeps the level, spells the loss out, then the kept mechanism.
-        let clamped = AppliedPriority::new(
+        // from_parts is the only constructor available on every target.
+        let clamped = AppliedPriority::from_parts(
             ThreadPriority::TimeCritical,
             ThreadPriority::TimeCritical,
             Grant::Brokered,
+            Some(FallbackReason::Clamped),
             Mechanism {
                 policy: MechanismPolicy::Nice,
                 value: -15,
             },
-        )
-        .with_reason(FallbackReason::Clamped);
+        );
         assert_eq!(
             clamped.to_string(),
             "TimeCritical [Brokered, Clamped] nice -15"
         );
+
+        // A refusal prints the bare variant in the bracket and the typed detail
+        // as a suffix - the payload does not change the bracket text.
+        let refused = AppliedPriority::from_parts(
+            ThreadPriority::Highest,
+            ThreadPriority::Normal,
+            Grant::Direct,
+            Some(FallbackReason::BrokerRefused(BrokerError::LimitsExceeded)),
+            Mechanism {
+                policy: MechanismPolicy::Nice,
+                value: 0,
+            },
+        );
+        assert_eq!(
+            refused.to_string(),
+            "Highest -> Normal [BrokerRefused] (LimitsExceeded) nice 0"
+        );
+        assert_eq!(refused.broker_error(), Some(BrokerError::LimitsExceeded));
     }
 }

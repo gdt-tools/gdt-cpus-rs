@@ -22,7 +22,7 @@
 use std::time::Duration;
 
 use crate::{
-    AppliedPriority, BrokerError, Error, FallbackReason, Grant, Mechanism, MechanismPolicy, Result,
+    AppliedPriority, Error, FallbackReason, Grant, Mechanism, MechanismPolicy, Result,
     ThreadPriority,
 };
 
@@ -40,10 +40,10 @@ fn rt_applied(mechanism: Mechanism) -> AppliedPriority {
     )
 }
 
-fn kept_timeshare(reason: FallbackReason, broker_error: Option<BrokerError>) -> AppliedPriority {
+fn kept_timeshare(reason: FallbackReason) -> AppliedPriority {
     let current = current_nice().unwrap_or(nice_for(ThreadPriority::Normal));
 
-    let mut applied = AppliedPriority::new(
+    AppliedPriority::new(
         ThreadPriority::TimeCritical,
         level_for_nice(current),
         Grant::Direct,
@@ -52,13 +52,7 @@ fn kept_timeshare(reason: FallbackReason, broker_error: Option<BrokerError>) -> 
             value: current as i8,
         },
     )
-    .with_reason(reason);
-
-    if let Some(broker_error) = broker_error {
-        applied = applied.with_broker_error(broker_error);
-    }
-
-    applied
+    .with_reason(reason)
 }
 
 pub(crate) fn promote(budget: Duration) -> Result<AppliedPriority> {
@@ -80,12 +74,11 @@ pub(crate) fn promote(budget: Duration) -> Result<AppliedPriority> {
         Err(e) => return Err(e),
     };
 
-    #[cfg(all(feature = "rtkit", not(target_os = "android")))]
+    #[cfg(all(feature = "rtkit", target_os = "linux"))]
     {
         use super::rtkit::Broker;
 
         let mut reason = FallbackReason::NoBroker;
-        let mut broker_error = None;
 
         let tid = super::affinity::current_tid()? as u64;
 
@@ -111,7 +104,6 @@ pub(crate) fn promote(budget: Duration) -> Result<AppliedPriority> {
                             let (r, _) = super::rtkit::classify(&e);
 
                             reason = r;
-                            broker_error = super::rtkit::broker_error(&e);
                         }
                     }
                 }
@@ -138,8 +130,6 @@ pub(crate) fn promote(budget: Duration) -> Result<AppliedPriority> {
                             let (r, _) = super::rtkit::classify(&e);
 
                             reason = r;
-
-                            broker_error = super::rtkit::broker_error(&e);
                         }
                     }
                 }
@@ -149,18 +139,18 @@ pub(crate) fn promote(budget: Duration) -> Result<AppliedPriority> {
             }
         }
 
-        Ok(kept_timeshare(reason, broker_error))
+        Ok(kept_timeshare(reason))
     }
     #[cfg(not(all(feature = "rtkit", target_os = "linux")))]
     {
         let _ = budget;
-        Ok(kept_timeshare(FallbackReason::NoBroker, None))
+        Ok(kept_timeshare(FallbackReason::NoBroker))
     }
 }
 
 /// The daemon REJECTS requests above its `MaxRealtimePriority` (it does not
 /// clamp), so ask for the lesser of our band position and its ceiling.
-#[cfg(all(feature = "rtkit", not(target_os = "android")))]
+#[cfg(all(feature = "rtkit", target_os = "linux"))]
 fn request_priority(max_realtime_priority: i64) -> u32 {
     (RT_PRIORITY as i64).min(max_realtime_priority).clamp(1, 99) as u32
 }
@@ -168,7 +158,7 @@ fn request_priority(max_realtime_priority: i64) -> u32 {
 /// The Mozilla ritual: soft = budget (SIGXCPU, catchable warning), hard = the
 /// daemon's ceiling (SIGKILL). Never raises the hard limit (impossible
 /// unprivileged) - only lowers it toward what the grant requires.
-#[cfg(all(feature = "rtkit", not(target_os = "android")))]
+#[cfg(all(feature = "rtkit", target_os = "linux"))]
 fn set_rttime_rlimit(budget: Duration, rttime_usec_max: i64) -> Result<()> {
     let daemon_max = rttime_usec_max.max(1) as libc::rlim_t;
 

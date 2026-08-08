@@ -15,10 +15,13 @@
 pub(crate) mod affinity;
 pub(crate) mod capabilities;
 pub(crate) mod cpu;
-#[cfg(all(feature = "rtkit", not(target_os = "android")))]
+// The broker exists on exactly one target: desktop Linux with the rtkit
+// feature. Every rtkit cfg in this family spells that one predicate or its
+// literal negation.
+#[cfg(all(feature = "rtkit", target_os = "linux"))]
 pub(crate) mod dbus;
 pub(crate) mod realtime;
-#[cfg(all(feature = "rtkit", not(target_os = "android")))]
+#[cfg(all(feature = "rtkit", target_os = "linux"))]
 pub(crate) mod rtkit;
 pub(crate) mod scheduling_policy;
 pub(crate) mod utils;

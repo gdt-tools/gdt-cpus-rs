@@ -122,7 +122,7 @@ mod tests {
         reason: Option<FallbackReason>,
         mechanism: Mechanism,
     ) -> AppliedPriority {
-        AppliedPriority::from_parts(requested, effective, grant, reason, mechanism, None).unwrap()
+        AppliedPriority::from_parts(requested, effective, grant, reason, mechanism)
     }
 
     #[test]

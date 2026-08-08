@@ -69,15 +69,11 @@ pub(crate) fn classify(e: &CallError) -> (FallbackReason, bool) {
     match e {
         CallError::Absent => (FallbackReason::NoBroker, true),
         CallError::TimedOut => (FallbackReason::BrokerTimedOut, false),
-        CallError::Refused { .. } => (FallbackReason::BrokerRefused, false),
+        CallError::Refused { name } => (
+            FallbackReason::BrokerRefused(BrokerError::from_dbus_name(name)),
+            false,
+        ),
         CallError::Io(_) => (FallbackReason::NoBroker, false),
-    }
-}
-
-pub(crate) fn broker_error(e: &CallError) -> Option<BrokerError> {
-    match e {
-        CallError::Refused { name } => Some(BrokerError::from_dbus_name(name)),
-        _ => None,
     }
 }
 
@@ -229,16 +225,12 @@ impl Broker {
 /// is denied, ask rtkit for the negative nice instead (clamped to the daemon's
 /// `MinNiceLevel`). On success returns the nice value actually granted (which
 /// may be weaker than requested - the caller detects the clamp); on failure
-/// returns the classified [`FallbackReason`] AND, when the daemon answered with a
-/// D-Bus ERROR, the typed [`BrokerError`] mapped from its error name - so the
-/// caller can branch on WHY a grant was refused (e.g. `AccessDenied` vs
-/// `LimitsExceeded`). `None` for a connect/timeout failure that carries no
-/// daemon error name.
-pub(crate) fn try_high_priority(
-    tid: u64,
-    requested_nice: i32,
-) -> Result<i32, (FallbackReason, Option<BrokerError>)> {
-    let mut broker = Broker::rtkit().map_err(|r| (r, None))?;
+/// returns the classified [`FallbackReason`]. A daemon that answered with a
+/// D-Bus ERROR classifies as [`FallbackReason::BrokerRefused`] carrying the
+/// typed [`BrokerError`] mapped from its error name - so the caller can branch
+/// on WHY a grant was refused (e.g. `AccessDenied` vs `LimitsExceeded`).
+pub(crate) fn try_high_priority(tid: u64, requested_nice: i32) -> Result<i32, FallbackReason> {
+    let mut broker = Broker::rtkit()?;
 
     let min_nice = broker.min_nice_level().clamp(-20, 0) as i32;
     let nice = requested_nice.max(min_nice);
@@ -248,7 +240,7 @@ pub(crate) fn try_high_priority(
         Err(e) => {
             let (reason, _absent) = classify(&e);
 
-            Err((reason, broker_error(&e)))
+            Err(reason)
         }
     }
 }

@@ -510,7 +510,9 @@ impl From<gdt_cpus::FallbackReason> for GdtCpusFallbackReason {
         match r {
             gdt_cpus::FallbackReason::NoBroker => GdtCpusFallbackReason::NoBroker,
             gdt_cpus::FallbackReason::BrokerTimedOut => GdtCpusFallbackReason::BrokerTimedOut,
-            gdt_cpus::FallbackReason::BrokerRefused => GdtCpusFallbackReason::BrokerRefused,
+            // The C ABI flattens the refusal detail into the sibling
+            // `broker_error` field, so the payload is dropped here on purpose.
+            gdt_cpus::FallbackReason::BrokerRefused(_) => GdtCpusFallbackReason::BrokerRefused,
             gdt_cpus::FallbackReason::Clamped => GdtCpusFallbackReason::Clamped,
         }
     }
@@ -1355,9 +1357,7 @@ mod tests {
                 policy: gdt_cpus::MechanismPolicy::Nice,
                 value: -15,
             },
-            None,
-        )
-        .unwrap();
+        );
 
         let ffi = GdtCpusAppliedPriority::from(&applied);
         assert_eq!(

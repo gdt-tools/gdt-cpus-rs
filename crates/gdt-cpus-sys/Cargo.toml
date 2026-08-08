@@ -1,6 +1,6 @@
 [package]
 name = "gdt-cpus-sys"
-version = "0.2606.1"
+version = "0.2608.0"
 authors = ["Artur Wyszyński <artur.wyszynski@wildpixelgames.com>"]
 license = "MIT OR Apache-2.0"
 description = "Game Developer's Toolkit for CPU Management"
@@ -15,7 +15,7 @@ build = "build.rs"
 rust-version = "1.96"
 
 [dependencies]
-gdt-cpus = { version = "0.2606.1", path = "../gdt-cpus", default-features = false }
+gdt-cpus = { version = "0.2608.0", path = "../gdt-cpus", default-features = false }
 libc = "0.2.189"
 
 [features]

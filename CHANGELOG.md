@@ -2,6 +2,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2608.0] - Unreleased
+
+**Migration guide: [docs/migrations/MIGRATION-0.2608.0.md](docs/migrations/MIGRATION-0.2608.0.md)**.
+The Rust API has two mechanical breaks (`FallbackReason::BrokerRefused` gained its payload,
+`AppliedPriority::from_parts` lost a parameter); the C ABI is unchanged, not even a recompile.
+
+### 🚀 Features
+
+- Android support (#14, thanks @mokurin000): the crate builds and runs on `aarch64-linux-android`.
+  Detection reads the same sysfs surface as desktop Linux, affinity pinning and all priority levels
+  work, and `promote_thread_to_realtime` honestly reports `NoBroker` - Android has no rtkit and no
+  session bus, so the broker slot is empty by design, not unimplemented. Handles bionic's
+  `CPU_SETSIZE` typing (`usize` there, `c_int` on glibc).
+- `FromStr` for `AffinityMask` (#13, thanks @nazar-pc): parses kernel range lists with or without
+  brackets - `"[0-3, 6-9]"`, `"0-3,6-9"`, `"5"`, `"[]"` and `""` all parse, so both `Display`
+  spellings round-trip and a value copied out of `/sys/devices/system/cpu/online` parses unchanged.
+  Parsing delegates to the same range-list parser detection uses, so user text inherits detection's
+  strictness: `"0-3-5"` and `"3-0"` are rejected instead of silently reinterpreted, out-of-range ids
+  are an error (unlike `Extend`'s documented silent drop), and a huge range like `"0-4000000000"` is
+  rejected up front instead of expanding for minutes. Errors are the crate's own
+  `Error::InvalidParameter` / `Error::InvalidCoreId`.
+- `{:#}` alternate `Display` form for `AffinityMask`: the exact kernel spelling (`0-3,6-9`, empty
+  string when empty) with no whitespace, safe for `taskset -c`, config files, and whitespace-separated
+  group lists (`"0-7,16-23 8-15,24-31"` - one mask per thread pool - splits and round-trips; fed
+  whole to `FromStr` it errors rather than silently merging the groups). Plain `{}` keeps the
+  bracketed, slice-like rendering.
+
+### 🚜 Refactor
+
+- Reworked the rtkit integration: the priority-fallback vocabulary (`FallbackReason`, `BrokerError`,
+  `Grant::Brokered`, `AppliedPriority::{reason, broker_error, degraded}`) now compiles on every
+  target and feature set - consumers branch on it without any `cfg` - while the broker code itself is
+  confined to the one target that has it (Linux with the `rtkit` feature). `BrokerRefused` carries
+  the typed `BrokerError` as its payload, so "a broker error without a broker-refused reason" is
+  unrepresentable: `from_parts` is infallible now and the serde deserializer needs no validation.
+
+### ⚠️ Breaking (Rust)
+
+- `FallbackReason::BrokerRefused` -> `BrokerRefused(BrokerError)`: match arms need the payload
+  pattern; the `broker_error()` accessor is unchanged and now reads the payload.
+- `AppliedPriority::from_parts` takes 5 arguments (the trailing `broker_error: Option<BrokerError>`
+  is gone - put it inside the reason) and returns `Self` instead of `Option<Self>`.
+- serde: the `AppliedPriority` shape changed (the `broker_error` field folded into the
+  `BrokerRefused` payload), so values serialized by 0.2606.1 do not deserialize.
+
+### 🧹 Maintenance
+
+- Dependency bumps: `libc` 0.2.189, `bitflags` 2.13.1, `serde` 1.0.229.
+
 ## [0.2606.1] - 2026-06-21
 
 **Migration guide: [docs/migrations/MIGRATION-0.2606.1.md](docs/migrations/MIGRATION-0.2606.1.md)**.

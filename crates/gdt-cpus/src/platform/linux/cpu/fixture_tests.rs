@@ -99,3 +99,18 @@ fn fixture_i7_12700h_hybrid_without_core_type() {
 fn fixture_ai9_365_asymmetric_l3_domains() {
     run_fixture("sysfs-ai9-365");
 }
+
+#[test]
+fn fixture_epyc_7302p_l3_finer_than_numa() {
+    run_fixture("sysfs-epyc-7302p-nps1");
+}
+
+#[test]
+fn fixture_tr_7970x_numa_aligned_with_l3() {
+    run_fixture("sysfs-tr-7970x-nps4");
+}
+
+#[test]
+fn fixture_orangepi_rv2_riscv_clusters() {
+    run_fixture("sysfs-orangepi-rv2");
+}

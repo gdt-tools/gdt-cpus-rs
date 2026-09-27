@@ -84,3 +84,18 @@ fn fixture_numa_sparse_node_ids() {
     // counted only contiguous nodes and stranded later-node LPs on node 0.
     run_fixture("sysfs-numa-sparse");
 }
+
+#[test]
+fn fixture_quest3_clusters_as_packages() {
+    run_fixture("sysfs-quest3");
+}
+
+#[test]
+fn fixture_i7_12700h_hybrid_without_core_type() {
+    run_fixture("sysfs-i7-12700h");
+}
+
+#[test]
+fn fixture_ai9_365_asymmetric_l3_domains() {
+    run_fixture("sysfs-ai9-365");
+}

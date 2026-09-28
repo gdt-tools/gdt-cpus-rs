@@ -29,6 +29,13 @@ The Rust API has two mechanical breaks (`FallbackReason::BrokerRefused` gained i
   whole to `FromStr` it errors rather than silently merging the groups). Plain `{}` keeps the
   bracketed, slice-like rendering.
 
+### 🐛 Bug Fixes
+
+- Linux: physical cores and SMT indices now come from the kernel's sibling lists (`core_cpus_list`,
+  else `thread_siblings_list`) instead of `(physical_package_id, core_id)`. SoCs that restart
+  `core_id` per cluster inside one package reported half their cores, the rest as SMT siblings (an
+  OrangePi RV2 read 4 cores of 8); a tree without the lists keeps the old key for every LP.
+
 ### 🚜 Refactor
 
 - Reworked the rtkit integration: the priority-fallback vocabulary (`FallbackReason`, `BrokerError`,

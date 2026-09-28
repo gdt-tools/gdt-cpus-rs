@@ -3,8 +3,9 @@
 //! Pipeline (order is load-bearing - kinds must be final before per-kind cache
 //! bucketing):
 //! 1. online LP list (`devices/system/cpu/online`)
-//! 2. per-LP topology: package/core ids -> dense core+socket indices, SMT order,
-//!    explicit `core_type` when the kernel provides it (Intel hybrid)
+//! 2. per-LP topology: sibling masks (package/core ids on a tree without them) ->
+//!    dense core indices, package ids -> socket indices, SMT order, explicit
+//!    `core_type` when the kernel provides it (Intel hybrid)
 //! 3. kind classification: `core_type` -> capacity thresholds -> all-Performance
 //! 4. L3 domains: content-keyed by the lowest LP of each cache's
 //!    `shared_cpu_list` - NEVER attributed per socket (chiplet CPUs have
@@ -45,6 +46,16 @@ fn read_str(path: &Path) -> Option<String> {
 /// Reads a sysfs file as an integer; `None` if absent or unparseable.
 fn read_u64(path: &Path) -> Option<u64> {
     read_str(path)?.parse().ok()
+}
+
+/// The LP's core key: the lowest id of its sibling mask (`core_cpus_list`, else the deprecated
+/// `thread_siblings_list`) with the LP itself counted in. `None` when neither file yields a list.
+fn sibling_mask_key(topo: &Path, os_id: usize) -> Option<u32> {
+    let text = read_str(&topo.join("core_cpus_list"))
+        .or_else(|| read_str(&topo.join("thread_siblings_list")))?;
+    let mut lowest: Option<usize> = None;
+    parse_range_list_with(&text, |id| lowest = Some(lowest.map_or(id, |l| l.min(id)))).ok()?;
+    Some(lowest?.min(os_id) as u32)
 }
 
 /// Parses sysfs cache sizes: "32768K", "32M", bare bytes.
@@ -97,18 +108,31 @@ pub(crate) fn detect_at(sysfs_root: &Path, procfs_root: &Path) -> Result<CpuInfo
 
     // --- 2. Per-LP topology ---
     let mut lps: Vec<Lp> = Vec::with_capacity(online.len());
-    let mut core_keys: Vec<u32> = Vec::new(); // (package << 16) | core_id, dense by position
+    let mut core_keys: Vec<u32> = Vec::new(); // one per physical core, dense by position
     let mut socket_ids: Vec<u16> = Vec::new();
     let mut capacities: Vec<Option<u64>> = Vec::with_capacity(online.len());
 
-    for &os_id in &online {
+    // A core is named by the lowest LP of its sibling mask, which the kernel documents as the
+    // CPUs within the same core. `core_id` is only the platform's identifier: SoCs restart it per
+    // cluster inside one package, and the kernel's default is 0 on every CPU.
+    // NOTE(linux): all-or-nothing. With any online LP lacking a mask (trees recorded without the
+    // lists), every LP keys by `(package << 16) | core_id`, so the two key spaces never mix.
+    let mask_keys: Option<Vec<u32>> = online
+        .iter()
+        .map(|&os_id| sibling_mask_key(&cpu_base.join(format!("cpu{}/topology", os_id)), os_id))
+        .collect();
+
+    for (i, &os_id) in online.iter().enumerate() {
         let topo = cpu_base.join(format!("cpu{}/topology", os_id));
 
-        // NOTE: missing package/core ids default to 0 (partial sysfs can merge
-        // distinct cores into key (0,0) - known and accepted, exotic hardware only).
         let pkg = read_u64(&topo.join("physical_package_id")).unwrap_or(0) as u16;
-        let core_id = read_u64(&topo.join("core_id")).unwrap_or(0) as u16;
-        let key = (u32::from(pkg) << 16) | u32::from(core_id);
+        let key = match &mask_keys {
+            Some(keys) => keys[i],
+            None => {
+                let core_id = read_u64(&topo.join("core_id")).unwrap_or(0) as u16;
+                (u32::from(pkg) << 16) | u32::from(core_id)
+            }
+        };
 
         let (core_idx, smt_index) = match core_keys.iter().position(|&k| k == key) {
             Some(idx) => {
